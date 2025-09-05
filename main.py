@@ -1,20 +1,16 @@
+# main.py (handler minimale e "a prova di bomba")
 import os
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 import resend
 
-load_dotenv()
 resend.api_key = os.getenv("RESEND_API_KEY")
-
-EMAIL_TO = os.getenv("EMAIL_TO")                      # es. "tuamail@esempio.com"
-EMAIL_FROM = os.getenv("EMAIL_FROM") or "onboarding@resend.dev"
+EMAIL_TO = os.getenv("EMAIL_TO")  # es: "tua.email@gmail.com"
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # in prod: metti il tuo dominio
+    allow_origins=["*"],  # in prod limita al tuo dominio FE
     allow_credentials=True,
     allow_methods=["POST", "OPTIONS", "GET"],
     allow_headers=["*"],
@@ -22,7 +18,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"ok": True, "service": "emailsender", "from": EMAIL_FROM, "to": EMAIL_TO is not None}
+    return {"ok": True, "from": "onboarding@resend.dev", "to_set": bool(EMAIL_TO)}
 
 @app.post("/send-email")
 async def send_email(request: Request):
@@ -30,6 +26,7 @@ async def send_email(request: Request):
         raise HTTPException(status_code=500, detail="Missing RESEND_API_KEY")
 
     data = await request.json()
+
     name    = (data.get("name") or "").strip()
     email   = (data.get("email") or "").strip()
     message = (data.get("message") or "").strip()
@@ -37,46 +34,32 @@ async def send_email(request: Request):
     site    = (data.get("site") or "").strip()
     hp      = (data.get("hp") or "").strip()
 
-    if hp:
-        return {"ok": True, "skipped": True}  # honeypot
+    if hp:  # honeypot → ignora bot
+        return {"ok": True, "skipped": True}
 
     if not name or not email or not message:
         raise HTTPException(status_code=422, detail="Missing fields")
 
-    # Resend vuole SEMPRE una lista per "to"
+    # Resend: to DEVE essere lista
     to_list = [EMAIL_TO] if EMAIL_TO else [email]
 
-    payload = {
-        "from": EMAIL_FROM,
-        "to": to_list,
-        "subject": f"Nuovo messaggio dal portfolio: {name}",
-        "reply_to": email,
-        "text": (
-            f"Nome: {name}\nEmail: {email}\nAzienda: {company}\nSito: {site}\n\n"
-            f"Messaggio:\n{message}\n"
-        ),
-        "html": f"""
-            <h2>Nuovo messaggio dal portfolio</h2>
-            <p><b>Nome:</b> {name}</p>
-            <p><b>Email:</b> {email}</p>
-            {f"<p><b>Azienda:</b> {company}</p>" if company else ""}
-            {f"<p><b>Sito:</b> {site}</p>" if site else ""}
-            <p><b>Messaggio:</b><br/>{message.replace("\n","<br/>")}</p>
-        """,
-    }
-
     try:
-        resp = resend.Emails.send(payload)  # sync call
+        resp = resend.Emails.send({
+            "from": "onboarding@resend.dev",   # mittente di test ufficiale
+            "to": to_list,                      # SEMPRE array
+            "subject": f"Nuovo messaggio: {name}",
+            "text": (
+                f"Da: {name} <{email}>\n"
+                f"Azienda: {company}\nSito: {site}\n\n"
+                f"{message}\n"
+            ),
+        })
         print("RESEND RESPONSE:", resp)
-
-        # L’SDK valido torna un dict con "id"
-        if not resp or not isinstance(resp, dict) or not resp.get("id"):
+        if not isinstance(resp, dict) or not resp.get("id"):
             raise RuntimeError(f"Resend failed: {resp}")
-
         return {"ok": True, "id": resp["id"]}
+
     except Exception as e:
-        # Prova a tirar fuori più info dall’eccezione
-        err_msg = getattr(e, "message", None) or str(e)
-        err_dict = getattr(e, "__dict__", {})
-        print("RESEND ERROR:", err_msg, err_dict)
-        raise HTTPException(status_code=500, detail=f"Email send failed: {err_msg}")
+        # stampa dettagli utili nei log Render
+        print("RESEND ERROR:", repr(e), getattr(e, "__dict__", {}))
+        raise HTTPException(status_code=500, detail=f"Email send failed: {e}")
